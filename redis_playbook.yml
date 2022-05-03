@@ -1,0 +1,96 @@
+# Install and configure redis for data capture 
+# 
+# Copyright 2022 Duncan Fyfe
+# Licenced under Apache License 2.0.
+# See https://github.com/DuncanFyfe/mlx90640_capture/blob/93a9fd8f3e41666e31f22dee7868ddbb59e20e77/LICENSE
+# for details.
+#
+# 
+#
+---
+- hosts: mlx90640_hosts
+  become: yes
+  serial: 1
+  vars:
+    - build_prefix: /home/pi/work/src
+    - redis_config_template: redis.config
+    - redis_users_acl: redis_users.acl
+    - REDIS_EXTERNAL_IP_ADDR: ""
+    - REDIS_ROOT: /var/log/redis
+    - REDIS_MAX_MEMORY: 32m  
+    - redis_plus_plus_src: "external/redis-plus-plus-master.zip"
+    - redis_plus_plus_build_dir: "{{ build_prefix }}/redis-plus-plus-master/build"
+    - CXX_STANDARD: 11
+  vars_files:
+    - external/redis_user.yml
+  - name: Install needed packages
+    apt: 
+        pkg: 
+          - cmake
+          - redis
+          - redis-tools
+          - libhiredis0.14
+          - libhiredis-dev
+          - python3-redis
+        update_cache: yes
+        state: present
+  - name: Clean the package caches
+    apt:
+      autoclean: yes
+  - name: Redis config
+    template:
+      src: "templates/{{ redis_config_template }}"
+      dest: /etc/redis/redis.conf
+      owner: redis
+      group: redis
+      mode: u=rw,g=r,o-rwx
+  - name: Redis ACLs
+    template:
+      src: "templates/{{ redis_users_acl }}"
+      dest: /etc/redis/users.acl
+      owner: redis
+      group: redis
+      mode: u=rw,g=r,o-rwx
+  - name: Disable overcommit
+    lineinfile:
+      create: false
+      regex: '^vm.overcommit_memory'
+      line: vm.overcommit_memory=1                  
+      path: /etc/sysctl.conf
+      insertafter: EOF
+      state: present
+    register: sysctl
+  - debug:
+      var: sysctl        
+  - name: Make build directory
+    file:
+      path: "{{ build_prefix }}"
+      state: directory
+    become: no
+  - name: Install redis c++ client libraries (needs hiredis installed above)
+    unarchive:
+      src: "{{ redis_plus_plus_src }}"
+      dest: "{{ build_prefix }}"
+    become: no
+  - name: Create redis_plus_plus build directory
+    file:
+      path: "{{ redis_plus_plus_build_dir }}"
+      state: directory
+    become: no
+  - name:  Build redis_plus_plus
+    shell: "{{ item }}"
+    args:
+      chdir: "{{ redis_plus_plus_build_dir }}"
+      executable: /bin/bash
+    with_items:
+      - "cmake -DREDIS_PLUS_PLUS_CXX_STANDARD={{ CXX_STANDARD }} .."
+      - "make"
+    become: no
+  - name:  Install redis_plus_plus
+    shell: "make install"
+    args:
+      chdir: "{{ redis_plus_plus_build_dir }}"
+      executable: /bin/bash
+    become: yes
+
+

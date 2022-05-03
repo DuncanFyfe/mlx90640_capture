@@ -1,0 +1,178 @@
+# MLX90640 Thermal Camera Playbook
+# 
+# Copyright 2022 Duncan Fyfe
+# Licenced under Apache License 2.0.
+# See https://github.com/DuncanFyfe/mlx90640_capture/blob/93a9fd8f3e41666e31f22dee7868ddbb59e20e77/LICENSE
+# for details.
+#
+# AFTER: redis-playbook.yml
+# BEFORE: 
+---
+- hosts: mlx90640_hosts
+  become: yes
+  # I use a raspberry pi 3 as a jumphost.  This causes SSH problems when trying
+  # to connect to hosts in parallel.  
+  serial: 1
+  vars:
+    - build_prefix: /home/pi/work/src
+    - gpu_memory: 256
+    - mlx90640_source_origin: "https://github.com/pimoroni/mlx90640-library"
+    - mlx90640_source: "external/mlx90640-library-master.zip"
+    - mlx90640_source_path: "{{ build_prefix }}/mlx90640-library-master"
+    - bcm2835_source_orogin: "http://www.airspayce.com/mikem/bcm2835/bcm2835-1.71.tar.gz"
+    - bcm2835_source: external/bcm2835-1.71.tar.gz
+    - bcm2835_source_path: "{{ build_prefix }}/bcm2835-1.71"
+      # LINUX (default), RPI (build and use BCM2835 I2C driver)
+    - mlx90640_i2c_mode: "LINUX"
+    - install_mlx90640_examples: no
+    - i2c_baudrate: 400000
+    - reboot_required: no
+  tasks:
+# Set GPU memory
+    - name: Get current GPU memory split
+      shell: "raspi-config nonint get_config_var gpu_mem /boot/config.txt"
+      register: cur_gpu_mem
+      changed_when: False
+    - debug:
+        var: cur_gpu_mem
+    - block:
+      - debug:
+          var: gpu_memory
+      - name: Set GPU memory split
+        shell: "raspi-config nonint do_memory_split {{ gpu_memory }}"
+      - name: Confirm GPU memory split
+        shell: "raspi-config nonint get_config_var gpu_mem /boot/config.txt"
+        register: confirm_gpu_mem
+        changed_when: confirm_gpu_mem.stdout|int == gpu_memory|int
+        failed_when: confirm_gpu_mem.stdout|int != gpu_memory|int
+      - set_fact:
+          reboot_required: yes
+        when: confirm_gpu_mem.stdout|int == gpu_memory|int
+      when: cur_gpu_mem.stdout|int != gpu_memory|int
+    - name: Create build prefix location
+      file:
+        path: "{{ build_prefix }}"
+        state: directory
+        owner: pi
+        group: pi
+      become: no
+    - name: I2C dependencies
+      apt: 
+        pkg:
+          - i2c-tools
+        state: present
+# Enable I2C
+    - name: Get I2C
+      shell: "raspi-config nonint get_i2c"
+      register: get_i2c_status
+    - block:
+      - name: Enable I2C
+        shell: "raspi-config nonint do_i2c 0"
+      - name: Confirm I2C status
+        shell: "raspi-config nonint get_i2c"
+        register: confirm_i2c_status
+        changed_when: confirm_i2c_status.stdout == "0"
+        failed_when: confirm_i2c_status.stdout != "0"
+      - set_fact:
+          reboot_required: yes
+        when: confirm_i2c_status.changed
+      when: get_i2c_status != "0"
+    - name: mlx90640 package dependencies
+      apt:
+        pkg:
+          - libi2c-dev
+          - libavutil-dev
+          - libavcodec-dev
+          - libavformat-dev
+          - libsdl2-dev
+          - python3-pip
+          - python3-serial
+          - python3-willow
+        state: present
+    - name:
+      lineinfile:
+        regexp: "^dtparam=i2c1_baudrate="
+        line: "dtparam=i2c1_baudrate={{ i2c_baudrate }}"
+        path: /boot/config.txt
+        state: present
+      register: mlx90640_overlay
+    - set_fact:
+        reboot_required: true
+      when: mlx90640_overlay.changed
+    - block:
+        # Only build the bcm2835 package when requested.
+      - name: bcm2835 package dependencies
+        apt:
+          pkg:
+            - automake
+            - libc6-dev
+            - libgcc-s-dev
+            - libstdc++-staticdev
+          state: present
+      - name: Unpack the bcm2835 source.
+        unarchive:
+          src: "{{ bcm2835_source }}"
+          dest: "{{ build_prefix }}"
+        become: no
+      - name: Build bcm2835
+        command: "{{ item }}"
+        args:
+          chdir: "{{ bcm2835_source_path }}"
+        become: no 
+        with_items:
+          - "./configure"
+          - "make"
+          - "make check"
+      - name: Install bcm2835
+        command: "{{ item }}"
+        args:
+          chdir: "{{ bcm2835_source_path }}"
+        become: yes
+        with_items:
+          - "make install"
+      when: mlx90640_i2c_mode == "RPI"
+
+    - name: Unpack the mlx90640 source
+      unarchive:
+        src: "{{ mlx90640_source }}"
+        dest: "{{ build_prefix }}"
+      become: no
+    - name: Build mlx90640-library
+      command: "{{ item }}"
+      args:
+        chdir: "{{ mlx90640_source_path }}"
+      become: no
+      register: mlx90640_build
+      with_items:
+        - "make clean"
+        - "make I2C_MODE={{ mlx90640_i2c_mode }}"
+    - name: Install mlx90640-library
+      command: "{{ item }}"
+      args:
+        chdir: "{{ mlx90640_source_path }}"
+      register: mlx90640_build
+      with_items:
+        - "make install"
+    - name: Install examples from the mlx90640-library
+      copy: 
+        src: "{{ mlx90640_source_path }}/examples/{{ item }}"
+        dest: "/usr/local/bin/{{ item }}"
+        remote_src: true
+        mode: a+rx,go-w
+      with_items:
+        - "rawrgb"
+      become: yes
+      when: install_mlx90640_examples
+    - name: Install mlx90640 python libraries
+      # NOTE: The given example "mlx90640-dump auto" does not work 
+      # because one of the imports fails.  If implemented without that
+      # import it appears to work fine.
+      pip:
+        name: "{{ item }}"
+        executable: pip3
+      with_items:
+        - "mlx90640-driver-devicetree"
+        - "mlx90640-driver"
+    - debug:
+        msg: "Changes made which require a reboot to take effect.  Please reboot {{ inventory_hostname }}."
+      when: reboot_required

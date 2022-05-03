@@ -1,0 +1,3 @@
+// the configured options and settings for mlx90640_capture
+#define mlx90640_capture_VERSION_MAJOR @mlx90640_capture_VERSION_MAJOR@
+#define mlx90640_capture_VERSION_MINOR @mlx90640_capture_VERSION_MINOR@
