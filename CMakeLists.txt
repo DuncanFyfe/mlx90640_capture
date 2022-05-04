@@ -2,17 +2,18 @@ cmake_minimum_required(VERSION 3.10)
 set( CMAKE_VERBOSE_MAKEFILE on )
 
 project(app VERSION 1.0.0)
-
-set(CMAKE_CXX_STANDARD 17)
-set(CMAKE_CXX_FLAGS "-std=c++${CMAKE_CXX_STANDARD} -O2 -Wall -W -Werror -fPIC")
-
-set(THREADS_PREFER_PTHREAD_FLAG ON)
-find_package(Threads REQUIRED)
-
-
 set(APP_SOURCE_DIR src)
 configure_file("${APP_SOURCE_DIR}/mlx90640_config.h.in" mlx90640_config.h)
 
+set(MLX_DEFAULT_CXX_STANDARD 17)
+if(NOT MLX_CXX_STANDARD)
+    set(MLX_CXX_STANDARD  ${MLX_DEFAULT_CXX_STANDARD} CACHE STRING "Set CXX standard" FORCE)
+    set_property(CACHE MLX_CXX_STANDARD PROPERTY STRINGS "11" "17")
+endif()
+
+set(CMAKE_CXX_FLAGS "-std=c++${MLX_CXX_STANDARD} -O2 -Wall -W -Werror -fPIC")
+set(THREADS_PREFER_PTHREAD_FLAG ON)
+find_package(Threads REQUIRED)
 
 find_package(Protobuf REQUIRED)
 include_directories(${Protobuf_INCLUDE_DIRS})
