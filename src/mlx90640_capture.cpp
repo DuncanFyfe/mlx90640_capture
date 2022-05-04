@@ -5,18 +5,27 @@
 #include <sstream>
 #include <chrono>
 #include <thread>
+#include <algorithm>
 #include <math.h>
 #include <stdlib.h>
 #include <stdio.h>
 #include <errno.h>
-#include <algorithm>
+#include <unistd.h>
+
 #include "MLX90640/MLX90640_API.h"
 #include "mlx90640_buffer.pb.h"
 #include <sw/redis++/redis++.h>
+#include <unistd.h>
+#include <sys/types.h>
+#include <pwd.h>
+#define SI_CONVERT_ICU
+#include "SimpleIni.h"
 
 #include "mlx90640_config.h"
 
+namespace fs = std::filesystem;
 using namespace sw::redis;
+using namespace std;
 /*
  * mlx90640_capture
  * ======
@@ -56,6 +65,9 @@ using namespace sw::redis;
 int main(int argc, char *argv[]){
 	GOOGLE_PROTOBUF_VERIFY_VERSION;
 	const uint64_t Mlx90640Fframe_schema_version=1;
+	string device_name("MLX90640");
+	string device_id("0");
+
 	const float emissivity = 0.8;
 	/* 32 is just a random number plucked from thin air. */
 	const auto maxrpt=32;
@@ -63,8 +75,8 @@ int main(int argc, char *argv[]){
 	   time to get out of our way.  50 milliseconds is a wet
 	   finger in the air guestimate based on the read times of 
 	   other I2C devices sharing the same i2c bus.
-	*/
-	const auto i2c_sleep = std::chrono::milliseconds(50);
+	   */
+	const auto i2c_sleep = chrono::milliseconds(50);
 
 
 	static uint16_t eeMLX90640[832];
@@ -80,7 +92,7 @@ int main(int argc, char *argv[]){
 	auto max_batch_size=FPS;
 	auto max_batch_size_set = 0;
 	auto maxcount = MAX_COUNT;
-	std::string outfile;
+	string outfile;
 
 	auto write_to_stdout = 0;
 	auto write_to_file = 0;
@@ -89,11 +101,95 @@ int main(int argc, char *argv[]){
 	auto rpt=maxrpt;
 	auto frame_time_micros = FRAME_TIME_MICROS;
 	char *p;
-	std::string pmsg; 
+	string pmsg; 
 
-	std::string redis_host;
-	std::string redis_key;
-	std::string redis_index;
+	string redis_host;
+	string redis_data_index;
+	string redis_data_key("...:DATA");
+	string redis_password;
+	string redis_user;
+	auto redis_data_key_set=0;
+	auto redis_data_index_set=0;
+
+	char hostname[HOST_NAME_MAX];
+	gethostname(hostname, HOST_NAME_MAX);
+	struct passwd *pw = getpwuid(getuid());
+	const fs::path home_dir(pw->pw_dir);
+	const fs::path cfg_filename(".mlx90640_capture.cfg");
+	auto  cfg_path = home_dir / cfg_filename;
+	const char* default_key=device_name.c_str();
+	CSimpleIniA ini;
+	if (fs::exists(cfg_path)) {
+		ini.SetUnicode();
+		SI_Error rc = ini.LoadFile(cfg_path.u8string().c_str());
+		if (rc < 0) { 
+			fprintf(stderr, "Unable to read configuration file.");
+			return 1;
+		};
+
+		if (ini.SectionExists(default_key)) {
+			if ini.KeyExists(default_key, "FPS") {
+				auto v = ini.GetLongValue(default_key,"FPS",FPS, 0);
+				fps = v;
+			}
+			if ini.KeyExists(default_key, "SKIP_FRAMES") {
+				auto v = ini.GetLongValue(default_key,"SKIP_FRAMES", SKIP_FRAMES, 0);
+				skip_frame = v;
+			}
+			if ini.KeyExists(default_key, "MAX_COUNT") {
+				auto v = ini.GetLongValue(default_key,"MAX_COUNT", MAX_COUNT, 0);
+				maxcount = v;
+			}
+			if ini.KeyExists(default_key, "WRITE_BATCH_SIZE") {
+				auto v = ini.GetLongValue(default_key,"WRITE_BATCH_SIZE", WRITE_BATCH_SIZE, 0);
+				maxcount = v;
+			}
+			if ini.KeyExists(default_key, "WRITE_TO_STDOUT") {
+				auto v = ini.GetBoolValue(default_key,"WRITE_TO_STDOUT", WRITE_BATCH_SIZE, 0);
+				write_to_stdout = v;
+			}
+			if ini.KeyExists(default_key, "WRITE_TO_FILE") {
+				auto v = ini.GetBoolValue(default_key,"WRITE_TO_FILE", WRITE_BATCH_SIZE, 0);
+				write_to_file = v;
+				if (write_to_file && ini.KeyExists(default_key, "OUTFILE")) {
+					auto v2 = ini.GetValue(default_key,"OUTFILE", "mlx90640_capture.bin", 0);
+					outfile.assign(v2);
+				}
+			}
+			if ini.KeyExists(default_key, "WRITE_TO_REDIS") {
+				auto v = ini.GetBoolValue(default_key,"WRITE_TO_REDIS", WRITE_BATCH_SIZE, 0);
+				write_to_redis = v;
+				if (write_to_redis) {
+					if (ini.KeyExists(default_key, "REDIS_HOST")) {
+						auto v2 = ini.GetValue(default_key,"REDIS_HOST", "127.0.0.1", 0);
+						redis_host.assign(v2);
+					}
+					if (ini.KeyExists(default_key, "REDIS_USER")) {
+						auto v2 = ini.GetValue(default_key,"REDIS_USER", "default", 0);
+						redis_user.assign(v2);
+					}
+					if (ini.KeyExists(default_key, "REDIS_KEY")) {
+						auto v2 = ini.GetValue(default_key,"REDIS_KEY");
+						if (v2 != NULL) {
+							redis_data_key.assign(v2);
+							redis_data_key_set = 1;
+						}
+					}
+					if (ini.KeyExists(default_key, "REDIS_PASSWORD")) {
+						auto v2 = ini.GetValue(default_key,"REDIS_PASSWORD","",0);
+						redis_password.assign(v2);
+					}
+					if (ini.KeyExists(default_key, "REDIS_INDEX")) {
+						auto v2 = ini.GetValue(default_key,"REDIS_INDEX","MLX_90640:CURRENT_TIMESERIES",0);
+						redis_data_index.assign(v2);
+						redis_data_index_set=1;
+					}
+				}
+			}
+		}
+
+	}
+
 
 	for (int i = 1; i < argc; ++i) {
 		if (strcmp(argv[i],"-f")==0 || strcmp(argv[i],"--fps")==0) {
@@ -102,8 +198,8 @@ int main(int argc, char *argv[]){
 				return 1;
 			}
 			fps = strtoul(argv[i+1], &p, 0);
-			if (errno !=0 || *p != '\0' || (fps & (fps - 1)) != 0 || fps > 64) {
-				fprintf(stderr, "Invalid framerate.  Valid values are 0, 1, 2, 4, 8, 16, 32.\n");
+			if (errno !=0 || *p != '\0' ) {
+				fprintf(stderr, "Invalid framerate.\n");
 				return 1;
 			}
 		}
@@ -168,33 +264,40 @@ int main(int argc, char *argv[]){
 				fprintf(stderr, "Redis key argument without value.\n");
 				return 1;
 			}
-			redis_key.assign(argv[i+1]);
+			redis_data_key.assign(argv[i+1]);
+			redis_data_key_set=1;
 		}
 		if (strcmp(argv[i],"-i")==0 || strcmp(argv[i],"--index")==0) {
 			if (i==argc-1) {
 				fprintf(stderr, "Redis index argument without value.\n");
 				return 1;
 			}
-			redis_index.assign(argv[i+1]);
+			redis_data_index.assign(argv[i+1]);
+			redis_data_index_set=1;
 		}
 		if (strcmp(argv[i],"--version")==0) {
-	    		std::cout << argv[0] << " Version " << mlx90640_capture_VERSION_MAJOR << "." << mlx90640_capture_VERSION_MINOR << std::endl;
+			cout << argv[0] << " Version " << mlx90640_capture_VERSION_MAJOR << "." << mlx90640_capture_VERSION_MINOR << endl;
 			return 0;
 		}
 		if (strcmp(argv[i],"--help")==0) {
-	    		std::cout << argv[0] << " Version " << mlx90640_capture_VERSION_MAJOR << "." << mlx90640_capture_VERSION_MINOR << std::endl;
-			std::cout << "\t-f|--fps    n[int| 0, 1, 2, 4, (8), 16, 32]  - Framerate." << std::endl;
-			std::cout << "\t-s|--skip   n[int| (2)]     - Skip this many frames on startup." << std::endl;
-			std::cout << "\t-c|--count  n[int| (0)]     - Only record this many frames (0 => don't stop)." << std::endl;
-			std::cout << "\t-b|--batch  n[int| (FPS)]   - Write data out in batches of this size." << std::endl;
-			std::cout << "\t-o|--output n[string|None]  - Write data to the given filename." << std::endl;
-			std::cout << "\t-r|--redis  - Write data to the given filename." << std::endl;
-			std::cout << "\t-h|--host   - Redis host." << std::endl;
-			std::cout << "\t-k|--key    - Write to this Redis key." << std::endl;
-			std::cout << "\t-i|--index  - Get the redis key from redis by reading this key." << std::endl;
-			std::cout << "\t--|--stdout - Write data to stdout" << std::endl;
+			cout << argv[0] << " Version " << mlx90640_capture_VERSION_MAJOR << "." << mlx90640_capture_VERSION_MINOR << endl;
+			cout << "\t-f|--fps    n[int| 0, 1, 2, 4, (8), 16, 32]  - Framerate." << endl;
+			cout << "\t-s|--skip   n[int| (2)]     - Skip this many frames on startup." << endl;
+			cout << "\t-c|--count  n[int| (0)]     - Only record this many frames (0 => don't stop)." << endl;
+			cout << "\t-b|--batch  n[int| (FPS)]   - Write data out in batches of this size." << endl;
+			cout << "\t-o|--output n[string|None]  - Write data to the given filename." << endl;
+			cout << "\t-r|--redis  - Write data to the given filename." << endl;
+			cout << "\t-h|--host   - Redis host." << endl;
+			cout << "\t-k|--key    - Write to this Redis key." << endl;
+			cout << "\t-i|--index  - Get the redis key from redis by reading this key." << endl;
+			cout << "\t--|--stdout - Write data to stdout" << endl;
 			return 0;
 		}
+	}
+
+	if ( (fps & (fps - 1)) != 0 || fps > 64) {
+		fprintf(stderr, "Invalid framerate.  Valid values are 0, 1, 2, 4, 8, 16, 32.\n");
+		return 1;
 	}
 	if (maxcount && max_batch_size > maxcount) {
 		max_batch_size_set=1;
@@ -203,13 +306,24 @@ int main(int argc, char *argv[]){
 	if (!max_batch_size_set) {
 		max_batch_size = fps;
 	}
-	auto frame_time = std::chrono::microseconds(frame_time_micros + OFFSET_MICROS);
+
+	std::string::size_type pos = 0u;
+	if ((pos = redis_data_key.find("...", pos)) != std::string::npos){
+		string redis_key_prefix(hostname);
+		redis_data_key.append(":");
+		redis_data_key.append(device_name);
+		redis_data_key.append(":");
+		redis_data_key.append(device_id);
+		redis_data_key.replace(pos,pos+3,redis_key_prefix)
+	}
+
+	auto frame_time = chrono::microseconds(frame_time_micros + OFFSET_MICROS);
 	mlx90640::Mlx90640Frame pframes[max_batch_size];
 
 	rpt=maxrpt;
 	do {
 		rsp = MLX90640_SetDeviceMode(MLX_I2C_ADDR, 0);
-		std::this_thread::sleep_for(i2c_sleep);
+		this_thread::sleep_for(i2c_sleep);
 	} while (rsp == -1 && --rpt);
 	if (rsp < 0) {
 		fprintf(stderr, "MLX90640_SetDeviceMode: Too many NAK from I2C commands.\n");
@@ -219,7 +333,7 @@ int main(int argc, char *argv[]){
 	rpt=maxrpt;
 	do {
 		rsp = MLX90640_SetDeviceMode(MLX_I2C_ADDR, 0);
-		std::this_thread::sleep_for(i2c_sleep);
+		this_thread::sleep_for(i2c_sleep);
 	} while (rsp == -1 && --rpt);
 	if (rsp < 0) {
 		fprintf(stderr, "MLX90640_SetDeviceMode: Too many NAK from I2C commands.\n");
@@ -229,7 +343,7 @@ int main(int argc, char *argv[]){
 	rpt=maxrpt;
 	do {
 		rsp = MLX90640_SetSubPageRepeat(MLX_I2C_ADDR, 0);
-		std::this_thread::sleep_for(i2c_sleep);
+		this_thread::sleep_for(i2c_sleep);
 	} while (rsp == -1 && --rpt);
 	if (rsp < 0) {
 		fprintf(stderr, "MLX90640_SetSubPageRepeat: Too many NAK from I2C commands.\n");
@@ -270,7 +384,7 @@ int main(int argc, char *argv[]){
 			fprintf(stderr, "MLX90640_SetChessMode: Error setting chess mode.");
 			return 1;
 		}
-		std::this_thread::sleep_for(i2c_sleep);
+		this_thread::sleep_for(i2c_sleep);
 	} while (rsp==-1 and --rpt);
 	if (rsp < 0) {
 		fprintf(stderr, "MLX90640_SetChessMode: Too many NAK from I2C commands.\n");
@@ -282,7 +396,7 @@ int main(int argc, char *argv[]){
 	rpt=maxrpt;
 	do {
 		rsp = MLX90640_DumpEE(MLX_I2C_ADDR, eeMLX90640);
-		std::this_thread::sleep_for(i2c_sleep);
+		this_thread::sleep_for(i2c_sleep);
 	} while (rsp==-1 and --rpt);
 	if (rsp < 0) {
 		fprintf(stderr, "MLX90640_DumpEE: Too many NAK from I2C commands.\n");
@@ -296,7 +410,7 @@ int main(int argc, char *argv[]){
 			fprintf(stderr, "Error setting resolution.");
 			return 1;
 		}
-		std::this_thread::sleep_for(i2c_sleep);
+		this_thread::sleep_for(i2c_sleep);
 	} while (rsp==-1 and --rpt);
 	if (rsp < 0) {
 		fprintf(stderr, "MLX90640_SetResolution: Too many NAK from I2C commands.\n");
@@ -311,7 +425,7 @@ int main(int argc, char *argv[]){
 			return 1;
 		}
 		rpt--;
-		std::this_thread::sleep_for(i2c_sleep);
+		this_thread::sleep_for(i2c_sleep);
 	} while (rsp==-1 and --rpt);
 	if (rsp < 0) {
 		fprintf(stderr, "MLX90640_ExtractParameters: Too many NAK from I2C commands.\n");
@@ -322,15 +436,15 @@ int main(int argc, char *argv[]){
 	// (unspecified) to get a reference for converting steady_clock timestamps 
 	// (we cannot have backsteps in time) to a nominal unix-epoch timestamp.
 	//
-	const auto reference_epoch_ns = (std::chrono::duration_cast<std::chrono::nanoseconds>( std::chrono::system_clock::now().time_since_epoch() ) - std::chrono::duration_cast<std::chrono::nanoseconds>( std::chrono::steady_clock::now().time_since_epoch())).count();
-	std::ostringstream ss;
+	const auto reference_epoch_ns = (chrono::duration_cast<chrono::nanoseconds>( chrono::system_clock::now().time_since_epoch() ) - chrono::duration_cast<chrono::nanoseconds>( chrono::steady_clock::now().time_since_epoch())).count();
+	ostringstream ss;
 	while (!maxcount || count < maxcount){
 		auto batch_count=0;
 		while(batch_count < max_batch_size && ( !maxcount || count <= maxcount)) {
-			auto start = std::chrono::steady_clock::now();
+			auto start = chrono::steady_clock::now();
 			rsp = MLX90640_GetFrameData(MLX_I2C_ADDR, frame);
 			if (rsp == -1 || rsp == -8 || skip_frames) {
-				std::cerr << "rsp=" << rsp << std::endl;
+				cerr << "rsp=" << rsp << endl;
 				// If there is contention on the i2c bus at this point
 				// try dropping one frame at a time.
 				// -1 == NACK during communications.
@@ -339,7 +453,7 @@ int main(int argc, char *argv[]){
 				if (skip_frames) {
 					--skip_frames;
 				}
-				std::this_thread::sleep_for(std::chrono::microseconds(frame_time - std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - start)));
+				this_thread::sleep_for(chrono::microseconds(frame_time - chrono::duration_cast<chrono::microseconds>(chrono::steady_clock::now() - start)));
 				continue;
 			}
 
@@ -347,7 +461,7 @@ int main(int argc, char *argv[]){
 			eTa = MLX90640_GetTa(frame, &mlx90640); // Sensor ambient temprature
 			MLX90640_CalculateTo(frame, &mlx90640, emissivity, eTa, mlx90640To); //calculate temprature of all pixels, base on emissivity of object
 
-			uint64_t ts = (uint64_t)( std::chrono::duration_cast<std::chrono::nanoseconds>( start.time_since_epoch() ).count() + reference_epoch_ns );
+			uint64_t ts = (uint64_t)( chrono::duration_cast<chrono::nanoseconds>( start.time_since_epoch() ).count() + reference_epoch_ns );
 
 			// MLX90640 data comes out with the first element of the array being the top right pixel.
 			// Reorganize to get the top left pixel as the first element of the array.
@@ -362,15 +476,15 @@ int main(int argc, char *argv[]){
 			}
 
 			// Need to send the data somewhere
-			std::this_thread::sleep_for(std::chrono::microseconds(frame_time - std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - start)));
+			this_thread::sleep_for(chrono::microseconds(frame_time - chrono::duration_cast<chrono::microseconds>(chrono::steady_clock::now() - start)));
 			++batch_count;
 			++count;
-			// std::cout << "batch_count/max_batch_size" << batch_count << "/" << max_batch_size << std::endl;
-			// std::cout << "count/maxcount" << count << "/" << maxcount << std::endl;
+			// cout << "batch_count/max_batch_size" << batch_count << "/" << max_batch_size << endl;
+			// cout << "count/maxcount" << count << "/" << maxcount << endl;
 		}
 		if (write_to_stdout || write_to_file) {
 			ss.clear();
-			ss.str(std::string());
+			ss.str(string());
 			for(auto i=0; i < batch_count; ++i) {
 				uint64_t slen = (uint64_t) pframes[i].ByteSizeLong();
 				ss.write((char const*) &Mlx90640Fframe_schema_version, sizeof(Mlx90640Fframe_schema_version));
@@ -379,18 +493,18 @@ int main(int argc, char *argv[]){
 				pframes[i].Clear();
 			}
 			if (write_to_file) {
-				std::ofstream out(outfile, std::ios::binary | std::ios::out | std::ios::app);
-				out << ss.str() << std::flush;
+				ofstream out(outfile, ios::binary | ios::out | ios::app);
+				out << ss.str() << flush;
 				out.close();
 
 			}
 			if (write_to_stdout) {
-				std::cout << ss.str() << std::flush;
+				cout << ss.str() << flush;
 
 			}
 		}
 		if (write_to_redis) {
-			std::cout << "TBD" << std::endl;
+			cout << "TBD" << endl;
 		}
 	}
 	google::protobuf::ShutdownProtobufLibrary();
