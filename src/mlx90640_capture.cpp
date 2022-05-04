@@ -14,7 +14,7 @@
 #include "mlx90640_buffer.pb.h"
 #include <sw/redis++/redis++.h>
 
-#include "app_config.h"
+#include "mlx90640_config.h"
 
 using namespace sw::redis;
 /*
@@ -56,7 +56,6 @@ using namespace sw::redis;
 int main(int argc, char *argv[]){
 	GOOGLE_PROTOBUF_VERIFY_VERSION;
 	const uint64_t Mlx90640Fframe_schema_version=1;
-	const auto maxcount = MAX_COUNT;
 	const float emissivity = 0.8;
 	/* 32 is just a random number plucked from thin air. */
 	const auto maxrpt=32;
@@ -72,7 +71,7 @@ int main(int argc, char *argv[]){
 	uint16_t frame[834];
 
 	float mlx90640To[768];
-	float data[768];
+	// float data[768];
 	float eTa;
 
 	auto fps = FPS;
@@ -80,6 +79,7 @@ int main(int argc, char *argv[]){
 	auto count = 0;
 	auto max_batch_size=FPS;
 	auto max_batch_size_set = 0;
+	auto maxcount = MAX_COUNT;
 	std::string outfile;
 
 	auto write_to_stdout = 0;
@@ -89,27 +89,25 @@ int main(int argc, char *argv[]){
 	auto rpt=maxrpt;
 	auto frame_time_micros = FRAME_TIME_MICROS;
 	char *p;
-	mlx90640::Mlx90640Frame pframe;
-	mlx90640::Mlx90640Frames pframes[max_batch_size];
 	std::string pmsg; 
 
-	std::String redis_host;
-	std::String redis_key;
-	std::String redis_index;
+	std::string redis_host;
+	std::string redis_key;
+	std::string redis_index;
 
 	for (int i = 1; i < argc; ++i) {
-		if (strcmp(argv[i],"-f")==0 || strcmp(argv[i],"--fps")) {
+		if (strcmp(argv[i],"-f")==0 || strcmp(argv[i],"--fps")==0) {
 			if (i==argc-1) {
 				fprintf(stderr, "Framerate argument without value.\n");
 				return 1;
 			}
 			fps = strtoul(argv[i+1], &p, 0);
-			if (errno !=0 || *p != '\0' || fps & (fps - 1) != 0 || fps > 64) {
+			if (errno !=0 || *p != '\0' || (fps & (fps - 1)) != 0 || fps > 64) {
 				fprintf(stderr, "Invalid framerate.  Valid values are 0, 1, 2, 4, 8, 16, 32.\n");
 				return 1;
 			}
 		}
-		if (strcmp(argv[i],"-s")==0 || strcmp(argv[i],"--skip")) {
+		if (strcmp(argv[i],"-s")==0 || strcmp(argv[i],"--skip")==0) {
 			if (i==argc-1) {
 				fprintf(stderr, "Skip frames argument without value.\n");
 				return 1;
@@ -120,7 +118,7 @@ int main(int argc, char *argv[]){
 				return 1;
 			}
 		}
-		if (strcmp(argv[i],"-c")==0 || strcmp(argv[i],"--count")) {
+		if (strcmp(argv[i],"-c")==0 || strcmp(argv[i],"--count")==0) {
 			if (i==argc-1) {
 				fprintf(stderr, "Count argument without value.\n");
 				return 1;
@@ -131,7 +129,7 @@ int main(int argc, char *argv[]){
 				return 1;
 			}
 		}
-		if (strcmp(argv[i],"-b")==0 || strcmp(argv[i],"--batch")) {
+		if (strcmp(argv[i],"-b")==0 || strcmp(argv[i],"--batch")==0) {
 			if (i==argc-1) {
 				fprintf(stderr, "Batch argument without value.\n");
 				return 1;
@@ -143,48 +141,48 @@ int main(int argc, char *argv[]){
 				return 1;
 			}
 		}
-		if (strcmp(argv[i],"--stdout") || (strcmp(argv[i],"--") && i==argc-1 ) ) {
+		if (strcmp(argv[i],"--stdout")==0 || (strcmp(argv[i],"--")==0 && i==argc-1 ) ) {
 			write_to_stdout=1;
 		}
-		if (strcmp(argv[i],"-o")==0 || strcmp(argv[i],"--output")) {
+		if (strcmp(argv[i],"-o")==0 || strcmp(argv[i],"--output")==0) {
 			if (i==argc-1) {
 				fprintf(stderr, "Output argument without value.\n");
 				return 1;
 			}
 			write_to_file=1;			
-			outfile.assign(argv[i+1])
+			outfile.assign(argv[i+1]);
 		}
-		if (strcmp(argv[i],"-r")==0 || strcmp(argv[i],"--redis")) {
+		if (strcmp(argv[i],"-r")==0 || strcmp(argv[i],"--redis")==0) {
 			write_to_redis=1;			
 		}
 
-		if (strcmp(argv[i],"-h")==0 || strcmp(argv[i],"--host")) {
+		if (strcmp(argv[i],"-h")==0 || strcmp(argv[i],"--host")==0) {
 			if (i==argc-1) {
 				fprintf(stderr, "Redis host argument without value.\n");
 				return 1;
 			}
-			redis_host.assign(argv[i+1])
+			redis_host.assign(argv[i+1]);
 		}
-		if (strcmp(argv[i],"-k")==0 || strcmp(argv[i],"--key")) {
+		if (strcmp(argv[i],"-k")==0 || strcmp(argv[i],"--key")==0) {
 			if (i==argc-1) {
 				fprintf(stderr, "Redis key argument without value.\n");
 				return 1;
 			}
-			redis_key.assign(argv[i+1])
+			redis_key.assign(argv[i+1]);
 		}
-		if (strcmp(argv[i],"-i")==0 || strcmp(argv[i],"--index")) {
+		if (strcmp(argv[i],"-i")==0 || strcmp(argv[i],"--index")==0) {
 			if (i==argc-1) {
 				fprintf(stderr, "Redis index argument without value.\n");
 				return 1;
 			}
-			redis_index.assign(argv[i+1])
+			redis_index.assign(argv[i+1]);
 		}
-		if (strcmp(argv[i],"--version")) {
-	    		std::cout << argv[0] << " Version " << app_VERSION_MAJOR << "." << app_VERSION_MINOR << std::endl;
+		if (strcmp(argv[i],"--version")==0) {
+	    		std::cout << argv[0] << " Version " << mlx90640_capture_VERSION_MAJOR << "." << mlx90640_capture_VERSION_MINOR << std::endl;
 			return 0;
 		}
-		if (strcmp(argv[i],"--help")) {
-	    		std::cout << argv[0] << " Version " << app_VERSION_MAJOR << "." << app_VERSION_MINOR << std::endl;
+		if (strcmp(argv[i],"--help")==0) {
+	    		std::cout << argv[0] << " Version " << mlx90640_capture_VERSION_MAJOR << "." << mlx90640_capture_VERSION_MINOR << std::endl;
 			std::cout << "\t-f|--fps    n[int| 0, 1, 2, 4, (8), 16, 32]  - Framerate." << std::endl;
 			std::cout << "\t-s|--skip   n[int| (2)]     - Skip this many frames on startup." << std::endl;
 			std::cout << "\t-c|--count  n[int| (0)]     - Only record this many frames (0 => don't stop)." << std::endl;
@@ -198,7 +196,7 @@ int main(int argc, char *argv[]){
 			return 0;
 		}
 	}
-	if (max_batch_size > maxcount) {
+	if (maxcount && max_batch_size > maxcount) {
 		max_batch_size_set=1;
 		max_batch_size = maxcount;
 	}
@@ -206,6 +204,7 @@ int main(int argc, char *argv[]){
 		max_batch_size = fps;
 	}
 	auto frame_time = std::chrono::microseconds(frame_time_micros + OFFSET_MICROS);
+	mlx90640::Mlx90640Frame pframes[max_batch_size];
 
 	rpt=maxrpt;
 	do {
@@ -311,7 +310,7 @@ int main(int argc, char *argv[]){
 			fprintf(stderr, "EEPROM data at the specified location is not a valid MLX90640 EEPROM");
 			return 1;
 		}
-		maxrpt--;
+		rpt--;
 		std::this_thread::sleep_for(i2c_sleep);
 	} while (rsp==-1 and --rpt);
 	if (rsp < 0) {
@@ -319,14 +318,19 @@ int main(int argc, char *argv[]){
 		return 1;
 	}
 
-	const auto reference_time = std::chrono::system_clock::now() - std::chrono::steady_clock::now();
+	// Use the difference between system_clock epoch (UNIX) and steady_clock epoch
+	// (unspecified) to get a reference for converting steady_clock timestamps 
+	// (we cannot have backsteps in time) to a nominal unix-epoch timestamp.
+	//
+	const auto reference_epoch_ns = (std::chrono::duration_cast<std::chrono::nanoseconds>( std::chrono::system_clock::now().time_since_epoch() ) - std::chrono::duration_cast<std::chrono::nanoseconds>( std::chrono::steady_clock::now().time_since_epoch())).count();
 	std::ostringstream ss;
-	while (!maxcount || count <= maxcount){
+	while (!maxcount || count < maxcount){
 		auto batch_count=0;
 		while(batch_count < max_batch_size && ( !maxcount || count <= maxcount)) {
 			auto start = std::chrono::steady_clock::now();
 			rsp = MLX90640_GetFrameData(MLX_I2C_ADDR, frame);
 			if (rsp == -1 || rsp == -8 || skip_frames) {
+				std::cerr << "rsp=" << rsp << std::endl;
 				// If there is contention on the i2c bus at this point
 				// try dropping one frame at a time.
 				// -1 == NACK during communications.
@@ -342,12 +346,12 @@ int main(int argc, char *argv[]){
 			MLX90640_InterpolateOutliers(frame, eeMLX90640);
 			eTa = MLX90640_GetTa(frame, &mlx90640); // Sensor ambient temprature
 			MLX90640_CalculateTo(frame, &mlx90640, emissivity, eTa, mlx90640To); //calculate temprature of all pixels, base on emissivity of object
-			uint64_t ts = std::chrono::duration_cast<std::chrono::nanoseconds>( start + reference_time ).count();
 
+			uint64_t ts = (uint64_t)( std::chrono::duration_cast<std::chrono::nanoseconds>( start.time_since_epoch() ).count() + reference_epoch_ns );
 
 			// MLX90640 data comes out with the first element of the array being the top right pixel.
 			// Reorganize to get the top left pixel as the first element of the array.
-			pframes[batch_count].Clear()
+			pframes[batch_count].Clear();
 			pframes[batch_count].set_timestamp(ts);
 			pframes[batch_count].set_data_order(mlx90640::Mlx90640Frame::LR);
 			for(int y = 0; y < 24; y++){
@@ -361,25 +365,27 @@ int main(int argc, char *argv[]){
 			std::this_thread::sleep_for(std::chrono::microseconds(frame_time - std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - start)));
 			++batch_count;
 			++count;
+			// std::cout << "batch_count/max_batch_size" << batch_count << "/" << max_batch_size << std::endl;
+			// std::cout << "count/maxcount" << count << "/" << maxcount << std::endl;
 		}
 		if (write_to_stdout || write_to_file) {
-			oss.clear();
-			oss.str(std::string());
+			ss.clear();
+			ss.str(std::string());
 			for(auto i=0; i < batch_count; ++i) {
 				uint64_t slen = (uint64_t) pframes[i].ByteSizeLong();
-				ss.write((char* const) &Mlx90640Fframe_schema_version, sizeof(Mlx90640Fframe_schema_version));
+				ss.write((char const*) &Mlx90640Fframe_schema_version, sizeof(Mlx90640Fframe_schema_version));
 				ss.write((char const*) &slen, sizeof(slen));
 				pframes[i].SerializeToOstream(&ss);
-				pframes[i].clear();
+				pframes[i].Clear();
 			}
 			if (write_to_file) {
 				std::ofstream out(outfile, std::ios::binary | std::ios::out | std::ios::app);
-				out << ss << std::flush;
+				out << ss.str() << std::flush;
 				out.close();
 
 			}
 			if (write_to_stdout) {
-				std::cout << ss << std::flush;
+				std::cout << ss.str() << std::flush;
 
 			}
 		}
